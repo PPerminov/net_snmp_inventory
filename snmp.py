@@ -29,6 +29,9 @@ def db(db_file):
         """CREATE TABLE if not exists vendors
            (id integer not null primary key autoincrement,
            l_name varchar(150) not null unique);""",
+        """CREATE TABLE IF NOT EXISTS routers
+           (id integer not null primary key autoincrement,
+           value varchar(16) not null unique)""",
         """CREATE TABLE if not exists mac_vendor
            (id integer not null primary key autoincrement,
            mac varchar(20) not null unique,
@@ -41,19 +44,21 @@ def db(db_file):
         """CREATE TABLE if not exists mac
            (id integer not null primary key autoincrement,
            mac varchar(20) not null unique);""",
-        """CREATE TABLE if not exists arping
+        """CREATE TABLE if not exists devices_main
            (id integer not null primary key autoincrement,
+           timestamp datetime not null default current_timestamp,
            mac integer not null,
-           ip integer not null unique,
+           ip integer not null,
            FOREIGN KEY (mac) REFERENCES mac(id)
            ON UPDATE CASCADE ON DELETE RESTRICT,
            FOREIGN KEY (ip) REFERENCES ip(id)
            ON UPDATE CASCADE ON DELETE RESTRICT);""",
-        """CREATE INDEX if not exists mac_i on arping (mac);""",
+        """CREATE INDEX if not exists mac_i on devices_main (mac);""",
         """CREATE INDEX if not exists l_n_i on vendors (l_name);"""
     ]
     for command in commands:
         cursor.execute(command)
+    cursor.close()
     return sql
 
 
@@ -90,7 +95,6 @@ def mac_db(sql, file_to_read=None):
     else:
         url = "https://code.wireshark.org/review/"
         url += "gitweb?p=wireshark.git;a=blob_plain;f=manuf"
-        print(url)
         response = request.urlopen(url).read().decode()
     response = response.split("\n")
     response = list(filter(filtrer, response))
@@ -120,7 +124,6 @@ def mac_ip(address):
         mac_list = output.decode().lower().strip().split("\n")
         if mac_list != ['']:
             break
-    out_list = []
     for item in mac_list:
         if 'hex-string' not in item:
             continue
@@ -137,9 +140,9 @@ def mac_ip(address):
             continue
 
 
-def networker(Networks):
+def networker(routers):
     workers = pool(6)
-    workers.map(mac_ip, Networks)
+    workers.map(mac_ip, map(lambda x: x[0], routers))
     workers.close()
 
 
@@ -161,36 +164,36 @@ def net_parse(networks):
                 dbg_list.append(name.value)
                 if name.value not in name_list:
                     name_list.append(name.value)
-                    routers.append(router)
+                    routers.append([router])
             except Exception:
                 continue
     return routers
 
 
-def start(sql):
-    incapsule = net_parse(networks)
-    with open('routers', 'w') as routers_file:
-        for item in incapsule:
-            routers_file.write(item + "\n")
-            networker(incapsule)
+def start(sql, update_routers=False):
+    cursor = sql.cursor()
+    cursor.execute("select value from routers")
+    routers = cursor.fetchall()
+    if routers == [] or update_routers != False:
+        routers = net_parse(networks)
+        cursor.executemany(
+            "insert or ignore into routers (value) values (?)", routers)
+        sql.commit()
+        if update_routers == 'Only':
+            exit(0)
+    networker(routers)
     ip = []
     mac = []
     for line in mp_array:
         ip.append((line[1],))
         mac.append((line[0],))
-    cursor = sql.cursor()
     cursor.executemany("insert or ignore into ip (ip) values (?)", ip)
     cursor.executemany("insert or ignore into mac (mac) values (?)", mac)
     cursor.executemany(
-        """insert or ignore into arping (mac, ip)
-           values(
-                   (select id from mac where mac = ?),
-                   (select id from ip where ip = ?)
-                 )""", mp_array)
+        """insert or ignore into devices_main (mac, ip)
+           values (
+                    (select id from mac where mac = ?),
+                    (select id from ip where ip = ?)
+                  )""", mp_array)
     cursor.close()
     sql.commit()
-
-
-sql = db("mac.db")
-mac_db(sql)
-# start(sql)
